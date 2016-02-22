@@ -24,7 +24,7 @@ internal class IntPair // Hack because tuples aren't allowed
 {
     public int first;
     public int second;
-
+    
     public IntPair(int first, int second) { this.first = first; this.second = second; }
 };
 
