@@ -1,9 +1,10 @@
-﻿const string GROUP_REFINERIES = "Refineries";
+const string GROUP_REFINERIES = "Refineries";
 const string ORE_STORAGE_GROUP = "OreStorage";
 
 // Maximum amount of ore each refinery will have per tick
 Dictionary <string, int> oreDepositPerTick = new Dictionary<string, int>()
 {
+	{"Scrap", 500},
     {"Iron", 500},
     {"Stone", 300},
     {"Gold", 80},
@@ -32,7 +33,7 @@ int oreCount = 0; // Updated from StackContainer
 
 void Main(string argument)  
 {
-    Echo("SmartRefineries Version 1.4");
+    Echo("SmartRefineries Version 1.5");
     switch(argument)
     {
         case "DisplayMenuUp": LCDMenuUp(); HandleLCDPanel("Display"); return;
@@ -42,7 +43,6 @@ void Main(string argument)
         default: break;
     };
 
-    curOre = 0;
     List<IMyRefinery> refineries = GetRefineries(GROUP_REFINERIES);
     IMyCargoContainer oreStore = GetOreContainer(ORE_STORAGE_GROUP);
 
@@ -50,12 +50,13 @@ void Main(string argument)
     if(refineries == null || oreStore == null || refineries.Count == 0)
         return;
 
+	curOre = 0;
     StackInventory(oreStore);
     HandleLCDPanel("Display");
     if(oreCount <= 0)
         return;
 
-    refineries.RemoveAll(r => !r.IsWorking); // Remove disabled refineries
+    refineries.RemoveAll(r => !r.IsWorking); // Remove disabled refineries from list
 
     for(int i=0; i<refineries.Count; i++)
     {
@@ -159,7 +160,7 @@ void ValidatePriorityList()
     }
 }
 
-// Stacks all ores
+// Stacks and merged all ores, pushes non-ores to end of inventory
 void StackInventory(IMyCargoContainer container)
 {
     IMyInventory inv = container.GetInventory(0);
@@ -170,9 +171,10 @@ void StackInventory(IMyCargoContainer container)
     for(int i=0; i<items.Count; i++)
     {
         IMyInventoryItem item = items[i];
-        if(item.Content.TypeId.ToString() == "MyObjectBuilder_Ore")
+        if(item.Content.TypeId.ToString() == "MyObjectBuilder_Ore" && item.Content.SubtypeId.ToString() != "Ice")
         {
             string oretype = item.Content.SubtypeId.ToString();
+			
             if(oresStacked.Contains(oretype))
                 continue;
 
@@ -186,6 +188,7 @@ void StackInventory(IMyCargoContainer container)
             mergeStacks.Add(new IntPair(items.Count+90000, i)); // Hack to push non-ores to back of stack...
     }
 
+	// Perform the list of inventory merges we created
     foreach(IntPair merge in mergeStacks)
     {
         for(int i=0; i<mergeStacks.Count; i++)
@@ -200,23 +203,66 @@ void StackInventory(IMyCargoContainer container)
     oreCount = oresStacked.Count;
 }
 
+/* Fills the given refinery with the ore index from the given cargo store */
 void FillRefinery(IMyRefinery refinery, IMyCargoContainer oreStore, int oreNum)
 {
-    IMyInventory ore = oreStore.GetInventory(0);
-    List<IMyInventoryItem> items = ore.GetItems();
+    IMyInventory oreInventory = oreStore.GetInventory(0);
+	List<IMyInventoryItem> oreItems = oreInventory.GetItems();
+	
+	IMyInventory refineryInventory = refinery.GetInventory(0);
     
     // Validation check...
-    if(!ore.IsItemAt(oreNum) || items[oreNum].Content.TypeId.ToString() != "MyObjectBuilder_Ore")
+    if(!oreInventory.IsItemAt(oreNum) ||oreItems[oreNum].Content.TypeId.ToString() != "MyObjectBuilder_Ore")
         return;
 
-    /* Check how much the refinery currently has */
+    // Get how much the refinery currently has
     int currentAmount=0;
-    if(refinery.GetInventory(0).IsItemAt(0))
-        currentAmount = (int)refinery.GetInventory(0).GetItems()[0].Amount;
+    if(refineryInventory.IsItemAt(0))
+        currentAmount = (int)refineryInventory.GetItems()[0].Amount;
+	
+	// Calculate amount to deposit
+	int depositAmount = oreDepositPerTick[oreItems[oreNum].Content.SubtypeId.ToString()] - currentAmount;
+	
+	if(depositAmount > 0)
+		oreInventory.TransferItemTo(refinery.GetInventory(0), oreNum, 0, true, depositAmount);
+}
 
-    ore.TransferItemTo(
-        refinery.GetInventory(0), oreNum, 0, true, 
-        oreDepositPerTick[items[oreNum].Content.SubtypeId.ToString()]-currentAmount);
+/* Disables/Enables refinery at index. Empties ore if disabling */
+void ToggleRefinery(int index)
+{
+    List<IMyRefinery> refineries = GetRefineries(GROUP_REFINERIES);
+   
+    // Safety check
+    if(index >= refineries.Count)
+        return;
+
+    IMyRefinery r = refineries[index];
+
+	/* If the refinery was enabled, empty ore from it */
+    if(r.IsWorking == true)
+    {
+        IMyCargoContainer container = GetOreContainer(ORE_STORAGE_GROUP);
+        if(container != null)
+            EmptyRefinery(r, container);
+    }
+
+    r.GetActionWithName(r.IsWorking ? "OnOff_Off" : "OnOff_On").Apply(r);
+}
+
+/* Removes all items from the ore inventory of a refinery */
+void EmptyRefinery(IMyRefinery r, IMyCargoContainer c)
+{
+    IMyInventory oreContainer = c.GetInventory(0); 
+    IMyInventory inv = r.GetInventory(0); 
+
+	/* We reverse iterate here, avoiding the game's auto-stacking
+	 * interfering and moving inventory indexes while we are working */
+    for(int i=inv.GetItems().Count-1; i>=0; i--) 
+        inv.TransferItemTo(oreContainer,  i, null, true);
+	
+	// Official documentation method. Does not work.
+	//for (int i=0; i < inv.GetItems().Count; i++)
+		//inv.TransferItemTo(oreContainer, 0, null, true, null);
 }
 
 IMyCargoContainer GetOreContainer(string groupname) 
@@ -447,36 +493,6 @@ void HandleMenuPrioritise()
   
     if(lcd_refinery != null)  
         RenderRefineryDisplay(lcd_refinery);
-}
-
-/* Disables/Enables refinery at index. Empties ore if disabling */
-void ToggleRefinery(int index)
-{
-    List<IMyRefinery> refineries = GetRefineries(GROUP_REFINERIES);
-   
-    // Safety check
-    if(index >= refineries.Count)
-        return;
-
-    IMyRefinery r = refineries[index];
-
-    if(r.IsWorking == true) // Empty it since we're going to disable it
-    {
-        IMyCargoContainer container = GetOreContainer(ORE_STORAGE_GROUP);
-        if(container != null)
-            EmptyRefinery(r, container);
-    }
-
-    r.GetActionWithName(r.IsWorking ? "OnOff_Off" : "OnOff_On").Apply(r);
-}
-
-void EmptyRefinery(IMyRefinery r, IMyCargoContainer c)
-{
-    IMyInventory oreContainer = c.GetInventory(0); 
-    IMyInventory inv = r.GetInventory(0); 
-
-    for(int i=inv.GetItems().Count-1; i>=0; i--) 
-        inv.TransferItemTo(oreContainer,  i, null, true);
 }
 
 /* Returns the requested LCD panel (by name) from the Grid system */
