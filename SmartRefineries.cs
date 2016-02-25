@@ -1,5 +1,14 @@
+// Refinery group name and Ore container name
 const string GROUP_REFINERIES = "Refineries";
-const string ORE_STORAGE_GROUP = "OreStorage";
+const string BLOCK_ORESTORAGE = "OreStorage";
+
+// LCD Names
+const string LCD_ORE = "lcdOre";
+const string LCD_REFINERY = "lcdRefinery";
+
+// LCD Display Colors
+Color COLOR_REFINERY = new Color(30, 255, 30);
+Color COLOR_ORE = new Color(222, 184, 135);
 
 // Maximum amount of ore each refinery will have per tick
 Dictionary <string, int> oreDepositPerTick = new Dictionary<string, int>()
@@ -17,23 +26,24 @@ Dictionary <string, int> oreDepositPerTick = new Dictionary<string, int>()
 	{"Cobalt", 8} 
 };
 
+// Lists of prioritised and blacklisted ores
 List<string> priorityList = new List<string>();
 List<string> blacklist = new List<string>();
 
-internal class IntPair // Hack because tuples aren't allowed
+// Hack because tuples aren't allowed
+internal class IntPair
 {
 	public int first;
 	public int second;
 
 	public IntPair(int first, int second) { this.first = first; this.second = second; }
 };
-
  
 int oreCount = 0; // Updated from StackContainer
 
 void Main(string argument)  
 {
-	Echo("SmartRefineries Version 1.5");
+	Echo("SmartRefineries Version 1.6");
 	switch(argument)
 	{
 		case "DisplayMenuUp": LCDMenuUp(); HandleLCDPanel("Display"); return;
@@ -43,8 +53,8 @@ void Main(string argument)
 		default: break;
 	};
 
-	List<IMyRefinery> refineries = GetRefineries(GROUP_REFINERIES);
-	IMyCargoContainer oreStore = GetOreContainer(ORE_STORAGE_GROUP);
+	List<IMyTerminalBlock> refineries = GetTypedBlockGroup<IMyRefinery>(GROUP_REFINERIES);
+	IMyCargoContainer oreStore = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE);
 
 	// Safety check
 	if(refineries == null || oreStore == null || refineries.Count == 0)
@@ -62,66 +72,53 @@ void Main(string argument)
 	{
 		int oreIndex = GetNextOre();
 		 if(oreIndex >= 0)
-			FillRefinery(refineries[i], oreStore, oreIndex);
+			FillRefinery((IMyRefinery)refineries[i], oreStore, oreIndex);
 	}
-}
-
-/* Getter functions for our blocks, this would be FAR better as a generic 
- *  but Space Engineers doesn't allow Types, generics, templates.... */  
-List<IMyRefinery> GetRefineries(string groupname)  
-{  
-	IMyBlockGroup targetGroup = GetGroup(groupname); 
-	if(targetGroup == null) return null; 
- 
-	List<IMyRefinery> targets = new List<IMyRefinery>();  
- 
-	foreach(IMyTerminalBlock b in targetGroup.Blocks)  
-		if(b is IMyRefinery)   
-			targets.Add((IMyRefinery)b);  
-  
-	return targets;  
 }
 
 int curOre = 0;
 int GetNextOre()
 {
-	IMyCargoContainer c = GetOreContainer(ORE_STORAGE_GROUP);
+	IMyCargoContainer c = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE);
 	IMyInventory cInv = c.GetInventory(0);
 	List<IMyInventoryItem> items = cInv.GetItems();
 
-
 	if(priorityList.Count > 0) // Priority mode
 	{
-			ValidatePriorityList();
-			if(priorityList.Count <= 0)
-				return GetNextOre();
+		ValidatePriorityList();
+		if(priorityList.Count <= 0)
+			return GetNextOre();
 
-			int count = priorityList.Count;
-			curOre = curOre % count; // Safety if switching to prioritise....
+		curOre = curOre % priorityList.Count; // Safety if switching to prioritise....
 
-			int index = 0;
-			string oreType = priorityList[curOre];
-			for(int i=0; i<oreCount; i++)
-			{
-				IMyInventoryItem ore = items[(curOre+i) % oreCount];
-				if(ore.Content.SubtypeId.ToString() == oreType)
-				{
-					index = (curOre+i) % oreCount;
-					break;
-				}
-			}
+		string oreType = priorityList[curOre];
+		for(int i=0; i<oreCount; i++)
+		{
+			int index = (curOre+i) % oreCount;
+			
+			if(!cInv.IsItemAt(index)) // Item isn't there anymore
+				continue;
+				
+			IMyInventoryItem ore = items[index];
+			if(IsOre(ore) && ore.Content.SubtypeId.ToString() == oreType)
+				return index;
+		}
 
-			curOre++;
-			return index;
+		curOre++;
 	}
 	else // Check blacklist
 	{
+		Echo("GetNextOre() 4.0");
 		for(int i=0; i<oreCount; i++)
 		{
 			int oreIndex = (curOre+i) % oreCount;
+			
+			if(!cInv.IsItemAt(oreIndex)) // Item isn't there anymore
+				continue;
+			
 			IMyInventoryItem ore = items[oreIndex];
 
-			if(!blacklist.Contains(ore.Content.SubtypeId.ToString()))
+			if(IsOre(ore) && !blacklist.Contains(ore.Content.SubtypeId.ToString()))
 			{
 				curOre = oreIndex+1;
 				return oreIndex;
@@ -135,7 +132,7 @@ int GetNextOre()
 // Removes priority flag on ores we no longer have...
 void ValidatePriorityList()
 {
-	IMyCargoContainer c = GetOreContainer(ORE_STORAGE_GROUP);
+	IMyCargoContainer c = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE);
 	IMyInventory cInv = c.GetInventory(0);
 	List<IMyInventoryItem> items = cInv.GetItems();
 
@@ -144,8 +141,11 @@ void ValidatePriorityList()
 		string oreType = priorityList[i];
 		bool found = false; 
 		for(int j=0; j<oreCount; j++) 
-		{ 
-			if(items[j].Content.SubtypeId.ToString() == oreType) 
+		{
+			if(!cInv.IsItemAt(j))
+				break;
+			
+			if(IsOre(items[j]) && items[j].Content.SubtypeId.ToString() == oreType) 
 			{ 
 				found = true; 
 				break; 
@@ -171,7 +171,7 @@ void StackInventory(IMyCargoContainer container)
 	for(int i=0; i<items.Count; i++)
 	{
 		IMyInventoryItem item = items[i];
-		if(item.Content.TypeId.ToString() == "MyObjectBuilder_Ore" && item.Content.SubtypeId.ToString() != "Ice")
+		if(IsOre(item))
 		{
 			string oretype = item.Content.SubtypeId.ToString();
 			
@@ -179,7 +179,7 @@ void StackInventory(IMyCargoContainer container)
 				continue;
 
 			for(int j=i+1; j<items.Count; j++)
-				if(items[j].Content.TypeId.ToString() == "MyObjectBuilder_Ore" && items[j].Content.SubtypeId.ToString() == oretype)
+				if(IsOre(item) && items[j].Content.SubtypeId.ToString() == oretype)
 					mergeStacks.Add(new IntPair(i, j));
 
 			oresStacked.Add(oretype);
@@ -212,7 +212,7 @@ void FillRefinery(IMyRefinery refinery, IMyCargoContainer oreStore, int oreNum)
 	IMyInventory refineryInventory = refinery.GetInventory(0);
 	
 	// Validation check...
-	if(!oreInventory.IsItemAt(oreNum) ||oreItems[oreNum].Content.TypeId.ToString() != "MyObjectBuilder_Ore")
+	if(!oreInventory.IsItemAt(oreNum) || !IsOre(oreItems[oreNum]))
 		return;
 
 	// Get how much the refinery currently has
@@ -230,18 +230,18 @@ void FillRefinery(IMyRefinery refinery, IMyCargoContainer oreStore, int oreNum)
 /* Disables/Enables refinery at index. Empties ore if disabling */
 void ToggleRefinery(int index)
 {
-	List<IMyRefinery> refineries = GetRefineries(GROUP_REFINERIES);
+	List<IMyTerminalBlock> refineries = GetTypedBlockGroup<IMyRefinery>(GROUP_REFINERIES);
    
 	// Safety check
 	if(index >= refineries.Count)
 		return;
 
-	IMyRefinery r = refineries[index];
+	IMyRefinery r = (IMyRefinery)refineries[index];
 
 	/* If the refinery was enabled, empty ore from it */
 	if(r.IsWorking == true)
 	{
-		IMyCargoContainer container = GetOreContainer(ORE_STORAGE_GROUP);
+		IMyCargoContainer container = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE);
 		if(container != null)
 			EmptyRefinery(r, container);
 	}
@@ -265,26 +265,43 @@ void EmptyRefinery(IMyRefinery r, IMyCargoContainer c)
 		//inv.TransferItemTo(oreContainer, 0, null, true, null);
 }
 
-IMyCargoContainer GetOreContainer(string groupname) 
-{ 
-	IMyBlockGroup targetGroup = GetGroup(groupname);
-	if(targetGroup == null) return null;
-
-	foreach(IMyTerminalBlock b in targetGroup.Blocks) 
-		if(b is IMyCargoContainer)  
-			return (IMyCargoContainer)b;
- 
-	return null; 
+/* Returns true if item qualifies as MyObjectBuilder_Ore AND SubtypeID is NOT ice */
+bool IsOre(IMyInventoryItem item)
+{
+	return item.Content.TypeId.ToString() == "MyObjectBuilder_Ore" && item.Content.SubtypeId.ToString() != "Ice";
 }
 
-IMyBlockGroup GetGroup(string groupname)
+/* Returns the first type-validated block with the given name
+ * Usage: IMyType block = GetTypedBlock<IMyType>(blockname) */
+T GetTypedBlock<T>(string targetname) where T : class, IMyTerminalBlock
 {
-	List<IMyBlockGroup> groups = new List<IMyBlockGroup>();  
-	GridTerminalSystem.GetBlockGroups(groups); 
-  
-	foreach(IMyBlockGroup g in groups)  
-		if(g.Name == groupname)
-			return g;
+	List<IMyTerminalBlock> search = new List<IMyTerminalBlock>(); 
+	GridTerminalSystem.SearchBlocksOfName(targetname, search);
+	
+	foreach(IMyTerminalBlock block in search)
+		if(block is T)
+			return (T)block;
+		
+	return null;
+}
+
+/* Returns a type validated list of Terminal Blocks.
+ * Usage: List<IMyType> lights = GetTypedBlockGroup<IMyType>(groupname) */
+/* NOTE: List<T> would be preferable, but does not work due to SE scripting limitations */
+List<IMyTerminalBlock> GetTypedBlockGroup<T>(string groupname)
+{	
+	IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName(groupname);
+	if(group != null && group.Blocks.Count > 0)
+	{
+		List<IMyTerminalBlock> typed_blocks = new List<IMyTerminalBlock>();
+
+		foreach(IMyTerminalBlock block in group.Blocks)
+			if(block is T)
+				typed_blocks.Add(block);
+		
+		return typed_blocks;
+
+	}
 
 	return null;
 }
@@ -306,8 +323,8 @@ void HandleLCDPanel(string argument) // Entrypoint
 
 void LCDDisplay()
 {
-	IMyTextPanel lcd_ore = FindLCDPanel("LCDOreCtrl");
-	IMyTextPanel lcd_refinery = FindLCDPanel("LCDRefineryCtrl");
+	IMyTextPanel lcd_ore = FindLCDPanel(LCD_ORE);
+	IMyTextPanel lcd_refinery = FindLCDPanel(LCD_REFINERY);
 
 	if(lcd_ore != null)
 		RenderOreDisplay(lcd_ore);
@@ -318,10 +335,10 @@ void LCDDisplay()
 
 void RenderOreDisplay(IMyTextPanel panel) // TODO share IMyCargoContainer reference instead of searching
 {
-	panel.SetValue("FontColor", new Color(222, 184, 135));
+	panel.SetValue("FontColor", COLOR_ORE);
 	string output = LCDTitle("Ore Status", false) + "\n\n";
 	
-	IMyCargoContainer oreContainer = GetOreContainer(ORE_STORAGE_GROUP);
+	IMyCargoContainer oreContainer = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE);
 	IMyInventory oreInventory = null;
 	if(oreContainer != null)
 		oreInventory = oreContainer.GetInventory(0);
@@ -357,16 +374,16 @@ void RenderOreDisplay(IMyTextPanel panel) // TODO share IMyCargoContainer refere
 
 void RenderRefineryDisplay(IMyTextPanel panel)
 {
-	panel.SetValue("FontColor", new Color(30, 255, 30)); 
+	panel.SetValue("FontColor", COLOR_REFINERY); 
 	string output = LCDTitle("Refineries", true) +"\n\n";
 
-	List<IMyRefinery> refineries = GetRefineries(GROUP_REFINERIES);
+	List<IMyTerminalBlock> refineries = GetTypedBlockGroup<IMyRefinery>(GROUP_REFINERIES);
 
 	maxSelectionRefinery=0;
 	int totalPowerUsage = 0;
 	for(int i=0; i<refineries.Count; i++)
 	{
-		IMyRefinery r = refineries[i];
+		IMyRefinery r = (IMyRefinery)refineries[i];
 		String refineryInfo = "        ";
 		refineryInfo += PadRightToPixels(r.CustomName, 350) + "-- ";
 		refineryInfo += PadRightToPixels(((r.IsWorking) ? "On " : "Off"), 115) + "--    ";
@@ -417,7 +434,7 @@ void HandleMenuToggle()
 	if(menuSelection < maxSelectionOre) // Blacklist/Whitelist ore
 	{
 		int oreIndex = menuSelection;
-		IMyCargoContainer c = GetOreContainer(ORE_STORAGE_GROUP);
+		IMyCargoContainer c = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE);
 		if(c == null)
 			return;
 		IMyInventory cInv = c.GetInventory(0);
@@ -438,8 +455,8 @@ void HandleMenuToggle()
 	}
 	else    // Enable All / Disable all
 	{
-		List<IMyRefinery> refineries = GetRefineries(GROUP_REFINERIES);
-		IMyCargoContainer c = GetOreContainer(ORE_STORAGE_GROUP);
+		List<IMyTerminalBlock> refineries = GetTypedBlockGroup<IMyRefinery>(GROUP_REFINERIES);
+		IMyCargoContainer c = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE);
 		if(refineries != null)
 		{
 			foreach(IMyRefinery refinery in refineries)
@@ -453,8 +470,8 @@ void HandleMenuToggle()
 		}
 	}
 
-	IMyTextPanel lcd_ore = FindLCDPanel("LCDOreCtrl"); 
-	IMyTextPanel lcd_refinery = FindLCDPanel("LCDRefineryCtrl");
+	IMyTextPanel lcd_ore = FindLCDPanel(LCD_ORE); 
+	IMyTextPanel lcd_refinery = FindLCDPanel(LCD_REFINERY);
 
 	if(lcd_ore != null) 
 		RenderOreDisplay(lcd_ore); 
@@ -468,7 +485,7 @@ void HandleMenuPrioritise()
 	if(menuSelection < maxSelectionOre) // (De)prioritise ore
 	{ 
 		int oreIndex = menuSelection; 
-		IMyCargoContainer c = GetOreContainer(ORE_STORAGE_GROUP); 
+		IMyCargoContainer c = GetTypedBlock<IMyCargoContainer>(BLOCK_ORESTORAGE); 
 		if(c == null) 
 			return; 
 		IMyInventory cInv = c.GetInventory(0); 
@@ -485,8 +502,8 @@ void HandleMenuPrioritise()
 	}
 
 
-	IMyTextPanel lcd_ore = FindLCDPanel("LCDOreCtrl");  
-	IMyTextPanel lcd_refinery = FindLCDPanel("LCDRefineryCtrl"); 
+	IMyTextPanel lcd_ore = FindLCDPanel(LCD_ORE);  
+	IMyTextPanel lcd_refinery = FindLCDPanel(LCD_REFINERY); 
  
 	if(lcd_ore != null)  
 		RenderOreDisplay(lcd_ore);  
